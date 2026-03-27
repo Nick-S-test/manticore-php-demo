@@ -1,4 +1,4 @@
-## Building Catalog Search in PHP with Manticore: Practical Guide
+## Implementing Modern Search in PHP Using Manticore: Practical Guide
 
 Search is one of the highest-leverage capabilities in data-heavy apps. This guide shows how this project uses **Manticore Search** and the **Manticore PHP client** to implement production-style search patterns: full-text, fuzzy, facets, filters, autocomplete, hybrid retrieval, KNN similarity, and scroll pagination.
 
@@ -47,7 +47,7 @@ We start by bringing up Manticore and installing the PHP dependencies.
 
 Recommended local setup in this repo uses Docker Compose, so we can start the search node with one command and keep the setup reproducible across environments.
 
-If Docker is not part of your stack, Manticore also supports native installation on Debian/Ubuntu, RHEL/CentOS, macOS, and Windows, as well as builds from source. We can follow the official installation guide for those paths:
+If Docker is not part of your stack, Manticore also supports native installation on Debian/Ubuntu, RHEL/CentOS, macOS, and Windows, as well as builds from source. You can follow the official installation guide for those paths:
 
 - https://manual.manticoresearch.com/Installation
 
@@ -58,20 +58,20 @@ cd <repo-root>
 docker compose up -d
 ```
 
-Then we can install the PHP app dependencies:
+Then install the PHP app dependencies:
 
 ```bash
 cd app
 composer install
 ```
 
-To configure how the PHP app connects to Manticore and which host/port it serves on, we can create an `.env` from the provided template:
+To configure how the PHP app connects to Manticore and which host/port it serves on, create an `.env` from the provided template:
 
 ```bash
 cp <repo-root>/app/.env.example <repo-root>/app/.env
 ```
 
-Finally, we can start the app locally:
+Finally, start the app locally:
 
 ```bash
 cd <repo-root>/app
@@ -79,7 +79,9 @@ php bin/bootstrap-demo.php
 php -S localhost:8081 -t public
 ```
 
-Then open `http://localhost:8081/`.
+Then just open `http://localhost:8081/` and the demo is here:
+
+![demo](demo.png)
 
 
 ### Try the Hosted Demo
@@ -93,7 +95,7 @@ If you want to see the project behavior immediately, you can try a hosted demo i
 
 In our app, we initialize the Manticore client once at startup and pass it to services/controllers that execute search and indexing operations.
 
-App snippet:
+Here’s a snippet from the app which does this:
 
 ```php
 $settings = require $root . '/config/settings.php';
@@ -115,11 +117,11 @@ This keeps connection setup centralized and makes host/port changes straightforw
 
 ## Model Your Data for Search
 
-In this demo, we model a board-game catalog. Each document represents one game with a searchable title/description, structured metadata for filtering (price, release year, player counts, play time), taxonomy fields (category/tags), and a vectorized description for semantic retrieval.
+In our demo, we model a board-game catalog. Each document represents one game with a searchable title/description, structured metadata for filtering (price, release year, player counts, play time), taxonomy fields (category/tags), and a vectorized description for semantic retrieval.
 
 The project stores Manticore schema in `app/config/settings.php`.
 
-Here is the schema excerpt:
+Here you can see the schema excerpt:
 
 ```php
   'table' => [
@@ -193,21 +195,19 @@ Table structures are managed through the app's Manticore configuration and boots
 
 ## Load Initial Data
 
-This guide assumes dataset files already exist and can be imported into `catalog_board_games`.
+The demo uses a prepared dataset that is already included in the project and imported into the `catalog_board_games` Manticore table.
 
-To load demo records from fixtures, we run:
+To load records from fixtures, run:
 
 ```bash
 cd <repo-root>/app
 php bin/bootstrap-demo.php
 ```
 
-In practice, we typically use two import modes:
+In this demo, we use two import modes so you can conveniently experiment with the data::
 
-- **Replace mode:** idempotent import for deterministic reloads.
-- **Append mode:** import new rows without replacing existing records.
-
-When taxonomy consistency matters, we can keep taxonomy growth disabled so unknown categories/tags are rejected.
+- "Reset" import: idempotent import for deterministic reloads, performed automatically when the app starts.
+- "Add-on" import: import new rows through the app' admin UI without replacing existing records.
 
 ---
 
@@ -270,7 +270,7 @@ $table->replaceDocument([
 $table->deleteDocument($id);
 ```
 
-We already use batch operations in the importer: `addDocuments()` for append mode and `replaceDocuments()` for idempotent reloads. The client also provides `deleteDocuments()` for query-based bulk deletes.
+We already use batch operations in the importer: `addDocuments()` for append mode and `replaceDocuments()` for idempotent reloads. The Manticore PHP client also provides `deleteDocuments()` for query-based bulk deletes.
 
 ```php
 if (count($batch) >= $batchSize) {
@@ -284,11 +284,12 @@ if (count($batch) >= $batchSize) {
 }
 ```
 
+![admin_crud](admin_crud.gif)
 ---
 
 ## Build the Core Search Loop
 
-In this app, Slim controllers receive request params and delegate search execution to `Manticoresearch\Search` / `Manticoresearch\Table`.
+In the app, Slim controllers receive request params and delegate search execution to `Manticoresearch\Search` / `Manticoresearch\Table`.
 
 ### Basic full-text query
 
@@ -313,6 +314,8 @@ $search->search($fuzzyQueryString);
 $search->option('fuzzy', 1);
 ```
 
+![fuzzy](fuzzy_search.gif)
+
 ### Filters
 
 Filters are how we narrow result sets to business-relevant numeric constraints without changing the query text itself. In this catalog context, we use filters for range-style constraints (for example, price bounds), while categories/tags are handled through facets.
@@ -328,17 +331,7 @@ $search->filter('player_count_min', 'gte', [$playerCountMin]);
 $search->filter('player_count_max', 'lte', [$playerCountMax]);
 ```
 
-### Sorting
-
-Sorting controls how matched documents are ordered for browsing and comparison. In this app, user-selected sorting is applied on the first result page, and continuation pages switch to deterministic `id` ordering to keep pagination stable.
-
-```php
-if ($page === 1) {
-    $this->applySort($search, $sortCriteria, $query, $useHybrid);
-} else {
-    $search->sort('id', 'asc');
-}
-```
+![filters](filters.gif)
 
 ### Facets
 
@@ -353,6 +346,8 @@ $facets = $resultSet->getFacets();
 $categoryBuckets = $facets['category_id']['buckets'] ?? [];
 $tagBuckets = $facets['tag_id']['buckets'] ?? [];
 ```
+
+![facets](facets.gif)
 
 ### Autocomplete
 
@@ -402,6 +397,8 @@ if ($useHybrid) {
 }
 ```
 
+![hybrid](hybrid_search.gif)
+
 ### Similar items (KNN)
 
 For item-to-item similarity, we run KNN against `description_vector` to return nearest neighbors, excluding current item.
@@ -420,6 +417,8 @@ $hits = $this->formatResultSet($resultSet)['hits'];
 return array_slice($hits, 0, self::SIMILAR_RESULT_LIMIT);
 ```
 
+![live](live_search.gif)
+
 ---
 
 ## Paginate Safely with Scroll Tokens
@@ -435,13 +434,6 @@ Why scroll can be helpful:
 App snippet:
 
 ```php
-if ($page === 1) {
-    $this->applySort($search, $sortCriteria, $query, $useHybrid);
-} else {
-    // Continuation pages use deterministic ordering for stable scroll tokens.
-    $search->sort('id', 'asc');
-}
-
 $effectiveScrollToken = $page > 1 ? $scrollToken : null;
 $search->option('scroll', $effectiveScrollToken ?? true);
 $resultSet = new ResultSet($this->client->search(['body' => $search->compile()], true));
@@ -449,11 +441,13 @@ $nextScroll = $resultSet->getScroll();
 $results['next_scroll'] = is_string($nextScroll) && $nextScroll !== '' ? $nextScroll : null;
 ```
 
+![scroll](scroll.gif)
+
 ---
 
 ## Wrap-Up
 
-This project shows how far you can go with a focused Manticore + PHP client integration without introducing unnecessary complexity. You get a search stack that is both expressive and operationally straightforward:
+This project shows what you can implement with a focused Manticore + PHP client integration without introducing unnecessary complexity. You get a search stack that is both expressive and operationally straightforward:
 
 - RT + taxonomy table management
 - full-text + fuzzy + facets + filters
@@ -462,4 +456,4 @@ This project shows how far you can go with a focused Manticore + PHP client inte
 - KNN similar-item retrieval
 - scroll pagination
 
-If we are building a PHP catalog, marketplace, or content discovery product, we can use this as a reference architecture: we start with strong full-text fundamentals, layer in vector retrieval where it improves result quality, and keep pagination/query semantics explicit and deterministic. That combination tends to scale well both for users and for the team maintaining the system.
+If you are building a PHP catalog, marketplace, or content discovery product, you can use this as a reference architecture: start with strong full-text fundamentals, layer in vector retrieval where it improves result quality, and keep pagination/query semantics explicit and deterministic. That combination tends to scale well both for users and for the team maintaining the system.
