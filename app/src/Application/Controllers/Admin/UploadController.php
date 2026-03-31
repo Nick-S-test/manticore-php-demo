@@ -104,16 +104,23 @@ class UploadController
             'prepared_files' => $this->resolvePreparedImportFiles(),
             'base_max_id' => $this->resolveBaseMaxId(),
             'import_batch_size' => max(1, (int) ($this->settings['import']['batch_size'] ?? 100)),
+            'manage_items_enabled' => $this->isManageItemsEnabled(),
         ]);
     }
 
     public function showItems(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        if (!$this->isManageItemsEnabled()) {
+            return $this->denyManageItemsAccess($response);
+        }
+
         $query = $request->getQueryParams();
         $itemPage = isset($query['page']) ? max(1, (int) $query['page']) : 1;
         $editId = isset($query['edit_id']) ? (int) $query['edit_id'] : 0;
+        $itemSort = $this->normalizeItemSort((string) ($query['sort'] ?? 'created_at'));
+        $itemDir = $this->normalizeSortDir((string) ($query['dir'] ?? 'desc'));
 
-        $itemsData = $this->recentItems($itemPage, 15);
+        $itemsData = $this->recentItems($itemPage, 15, $itemSort, $itemDir);
         $editItem = $editId > 0 ? $this->findItemById($editId) : null;
         $flash = $_SESSION['flash'] ?? null;
         unset($_SESSION['flash']);
@@ -125,6 +132,8 @@ class UploadController
             'flash' => $flash,
             'itemPage' => $itemPage,
             'editing' => $editItem !== null,
+            'itemSort' => $itemSort,
+            'itemDir' => $itemDir,
         ]);
     }
 
@@ -146,6 +155,8 @@ class UploadController
                 'error'
             );
         }
+
+        $this->clearManageItemsEnabled();
 
         return $this->redirectWithFlash(
             $response,
@@ -249,7 +260,7 @@ class UploadController
                 }
                 $message .= '.';
                 return $this->redirectWithFlash($response, '/admin/upload', $message, 'error');
-            }
+        }
 
             $result = $this->importer->importFile($path, $type, false, true);
             if (($result['status'] ?? '') !== 'ok') {
@@ -259,7 +270,7 @@ class UploadController
                     (string) ($result['error'] ?? 'Import failed due to a server-side issue.'),
                     'error'
                 );
-            }
+        }
         } catch (Throwable) {
             return $this->redirectWithFlash(
                 $response,
@@ -270,6 +281,9 @@ class UploadController
         }
 
         $rows = (int) ($result['rows'] ?? 0);
+        if ($rows > 0) {
+            $this->markManageItemsEnabled();
+        }
         return $this->redirectWithFlash(
             $response,
             '/admin/upload',
@@ -313,7 +327,7 @@ class UploadController
                 'processed' => 0,
                 'total' => 0,
             ], 400);
-        }
+            }
 
         if ($offset >= $total) {
             return $this->json($response, [
@@ -404,6 +418,9 @@ class UploadController
         $rows = max(0, (int) ($result['rows'] ?? 0));
         $nextOffset = min($total, $offset + $rows);
         $done = $nextOffset >= $total;
+        if ($done && $nextOffset > 0) {
+            $this->markManageItemsEnabled();
+        }
         return $this->json($response, [
             'type' => $done ? 'done' : 'progress',
             'status' => 'ok',
@@ -435,7 +452,7 @@ class UploadController
         }
         if ($type === 'xml') {
             return $this->buildXmlImportBatchFixture($sourcePath, $offset, $limit);
-        }
+            }
         return ['', 0];
     }
 
@@ -634,14 +651,34 @@ class UploadController
 
     public function saveItem(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        if (!$this->isManageItemsEnabled()) {
+            return $this->denyManageItemsAccess($response);
+        }
+
         $data = $request->getParsedBody() ?? [];
         $uploadedFiles = $request->getUploadedFiles();
         $imageFile = $uploadedFiles['image_file'] ?? null;
         $id = isset($data['id']) && $data['id'] !== '' ? (int) $data['id'] : 0;
+        $itemPage = max(1, (int) ($data['page'] ?? 1));
+        $itemSort = $this->normalizeItemSort((string) ($data['sort'] ?? 'created_at'));
+        $itemDir = $this->normalizeSortDir((string) ($data['dir'] ?? 'desc'));
+        if ($id > 0 && !$this->isManageableItemId($id)) {
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Baseline catalog items are read-only here. Import extra items first and edit only imported records.',
+                'error'
+            );
+        }
 
         $title = trim((string) ($data['title'] ?? ''));
         if ($title === '') {
-            return $this->redirectWithFlash($response, '/admin/items', 'Title is required.', 'error');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, $id > 0 ? $id : null, $itemSort, $itemDir),
+                'Title is required.',
+                'error'
+            );
         }
 
         try {
@@ -670,38 +707,92 @@ class UploadController
 
             if ($id > 0) {
                 $this->table->replaceDocument($document, $id);
-                return $this->redirectWithFlash($response, '/admin/items', 'Item updated successfully.', 'success');
+                return $this->redirectWithFlash(
+                    $response,
+                    $this->buildItemsPageUrl($itemPage, $id, $itemSort, $itemDir),
+                    'Item updated successfully.',
+                    'success'
+                );
             }
 
             $this->table->addDocument($document);
-            return $this->redirectWithFlash($response, '/admin/items', 'Item added successfully.', 'success');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Item added successfully.',
+                'success'
+            );
         } catch (Throwable) {
-            return $this->redirectWithFlash($response, '/admin/items', 'Failed to save item. Please check server logs and try again.', 'error');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, $id > 0 ? $id : null, $itemSort, $itemDir),
+                'Failed to save item. Please check server logs and try again.',
+                'error'
+            );
         }
     }
 
     public function deleteItem(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
+        if (!$this->isManageItemsEnabled()) {
+            return $this->denyManageItemsAccess($response);
+        }
+
         $data = $request->getParsedBody() ?? [];
         $id = (int) ($data['id'] ?? 0);
+        $itemPage = max(1, (int) ($data['page'] ?? 1));
+        $itemSort = $this->normalizeItemSort((string) ($data['sort'] ?? 'created_at'));
+        $itemDir = $this->normalizeSortDir((string) ($data['dir'] ?? 'desc'));
         if ($id <= 0) {
-            return $this->redirectWithFlash($response, '/admin/items', 'Invalid item id.', 'error');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Invalid item id.',
+                'error'
+            );
+        }
+        if (!$this->isManageableItemId($id)) {
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Baseline catalog items are read-only here. Only imported records can be removed.',
+                'error'
+            );
         }
 
         try {
             $this->table->deleteDocument($id);
-            return $this->redirectWithFlash($response, '/admin/items', 'Item deleted successfully.', 'success');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Item deleted successfully.',
+                'success'
+            );
         } catch (Throwable) {
-            return $this->redirectWithFlash($response, '/admin/items', 'Failed to delete item. Please check server logs and try again.', 'error');
+            return $this->redirectWithFlash(
+                $response,
+                $this->buildItemsPageUrl($itemPage, null, $itemSort, $itemDir),
+                'Failed to delete item. Please check server logs and try again.',
+                'error'
+            );
         }
     }
 
-    private function recentItems(int $page = 1, int $perPage = 15): array
+    private function recentItems(
+        int $page = 1,
+        int $perPage = 15,
+        string $sort = 'created_at',
+        string $dir = 'desc'
+    ): array
     {
+        $baseMaxId = $this->resolveBaseMaxId();
+        $sort = $this->normalizeItemSort($sort);
+        $dir = $this->normalizeSortDir($dir);
         $search = new Search($this->client);
         $search->setTable($this->tableName)
             ->search('*')
-            ->sort('created_at', 'desc')
+            ->filter('id', 'gt', [$baseMaxId])
+            ->sort($sort, $dir)
             ->limit($perPage)
             ->offset(($page - 1) * $perPage);
 
@@ -729,6 +820,10 @@ class UploadController
 
     private function findItemById(int $id): ?array
     {
+        if (!$this->isManageableItemId($id)) {
+            return null;
+        }
+
         $hit = $this->table->getDocumentById($id);
         if ($hit === null) {
             return null;
@@ -869,5 +964,87 @@ class UploadController
     {
         $_SESSION['flash'] = ['message' => $message, 'type' => $type];
         return $response->withHeader('Location', $to)->withStatus(302);
+    }
+
+    private function manageItemsFlagPath(): string
+    {
+        return rtrim((string) ($this->settings['paths']['storage'] ?? ''), '/') . '/catalog/.part2_imported_once.flag';
+    }
+
+    private function isManageItemsEnabled(): bool
+    {
+        $path = $this->manageItemsFlagPath();
+        return $path !== '' && is_file($path);
+    }
+
+    private function markManageItemsEnabled(): void
+    {
+        $path = $this->manageItemsFlagPath();
+        if ($path === '') {
+            return;
+        }
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        @file_put_contents($path, (string) time());
+    }
+
+    private function clearManageItemsEnabled(): void
+    {
+        $path = $this->manageItemsFlagPath();
+        if ($path === '' || !is_file($path)) {
+            return;
+        }
+        @unlink($path);
+    }
+
+    private function denyManageItemsAccess(ResponseInterface $response): ResponseInterface
+    {
+        return $this->redirectWithFlash(
+            $response,
+            '/admin/upload',
+            'Manage Items is locked until you import extra items from this page.',
+            'error'
+        );
+    }
+
+    private function isManageableItemId(int $id): bool
+    {
+        if ($id <= 0) {
+            return false;
+        }
+
+        return $id > $this->resolveBaseMaxId();
+    }
+
+    private function normalizeItemSort(string $sort): string
+    {
+        $normalized = strtolower(trim($sort));
+        return in_array($normalized, ['id', 'created_at'], true) ? $normalized : 'created_at';
+    }
+
+    private function normalizeSortDir(string $dir): string
+    {
+        return strtolower(trim($dir)) === 'asc' ? 'asc' : 'desc';
+    }
+
+    private function buildItemsPageUrl(
+        int $page,
+        ?int $editId = null,
+        string $sort = 'created_at',
+        string $dir = 'desc'
+    ): string
+    {
+        $params = [
+            'page' => max(1, $page),
+            'sort' => $this->normalizeItemSort($sort),
+            'dir' => $this->normalizeSortDir($dir),
+        ];
+        if ($editId !== null && $editId > 0) {
+            $params['edit_id'] = $editId;
+        }
+
+        return '/admin/items?' . http_build_query($params);
     }
 }

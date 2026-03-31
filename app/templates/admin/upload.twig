@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Catalog Admin – Import</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
         :root {
@@ -91,6 +92,20 @@
             border-color: #bad8a6;
             color: var(--accent-strong);
             font-weight: 600;
+        }
+
+        .topnav .is-disabled {
+            text-decoration: none;
+            color: #8a99ab;
+            padding: 0.34rem 0.62rem;
+            border: 1px solid #dde4ee;
+            border-radius: 0.48rem;
+            background: #f4f7fb;
+            font-size: 0.85rem;
+            display: inline-flex;
+            align-items: center;
+            min-height: 2rem;
+            cursor: not-allowed;
         }
 
         h1 {
@@ -330,7 +345,11 @@
         <div class="topnav">
             <a href="/">Catalog</a>
             <a href="/admin/upload" aria-current="page">Admin Dashboard</a>
-            <a href="/admin/items">Manage Items</a>
+            {% if manage_items_enabled %}
+                <a href="/admin/items" id="manage-items-nav">Manage Items</a>
+            {% else %}
+                <span id="manage-items-nav" class="is-disabled" aria-disabled="true" title="Import extra items from this page to unlock">Manage Items</span>
+            {% endif %}
         </div>
     </div>
 
@@ -343,9 +362,9 @@
     <section class="section-card">
         <section class="danger-zone">
         <h3>Data reset</h3>
-        <p>Reset uploaded demo records and keep baseline catalog data untouched by removing rows with <code>id &gt; {{ base_max_id }}</code>.</p>
+        <p>Reset imported records and keep baseline catalog data untouched by removing rows with <code>id &gt; {{ base_max_id }}</code>.</p>
         <form action="/admin/reset-uploaded" method="post" id="reset-form">
-            <button type="submit" id="reset-uploaded-submit" class="danger-btn" data-loading-label="Resetting…">Reset uploaded data</button>
+            <button type="submit" id="reset-uploaded-submit" class="danger-btn" data-loading-label="Resetting…">Reset data</button>
         </form>
         <div id="reset-progress" class="flash error" style="display:none;">Uploaded data reset in progress…</div>
         </section>
@@ -394,6 +413,7 @@
     const preparedName = document.getElementById('prepared-file-name');
     const resetForm = document.getElementById('reset-form');
     const resetSubmit = document.getElementById('reset-uploaded-submit');
+    const manageItemsNav = document.getElementById('manage-items-nav');
     const importProgressWrap = document.getElementById('import-progress-wrap');
     const importProgressBar = document.getElementById('import-progress-bar');
     const importProgressText = document.getElementById('import-progress-text');
@@ -565,6 +585,26 @@
         importProgressText.textContent = message;
     }
 
+    function hideImportProgress() {
+        if (!importProgressWrap || !importProgressBar || !importProgressText) {
+            return;
+        }
+        importProgressWrap.classList.remove('active', 'error');
+        importProgressBar.value = 0;
+        importProgressText.textContent = 'Waiting to start…';
+    }
+
+    function unlockManageItemsNav() {
+        if (!(manageItemsNav instanceof HTMLElement) || manageItemsNav.tagName.toLowerCase() === 'a') {
+            return;
+        }
+        const link = document.createElement('a');
+        link.id = 'manage-items-nav';
+        link.href = '/admin/items';
+        link.textContent = 'Manage Items';
+        manageItemsNav.replaceWith(link);
+    }
+
     function prependFlash(type, message) {
         const main = document.querySelector('main.shell');
         const h1 = main ? main.querySelector('h1') : null;
@@ -641,6 +681,8 @@
 
                         if (payload.done === true || nextOffset >= total) {
                             setImportSubmitLoading(false);
+                            hideImportProgress();
+                            unlockManageItemsNav();
                             prependFlash('success', payload.message || 'Import complete.');
                             return;
                         }

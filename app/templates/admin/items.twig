@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Catalog Admin – Items</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
         :root {
@@ -169,6 +170,30 @@
         table th, table td { border-bottom: 1px solid #e3ebf4; padding: 0.44rem 0.36rem; vertical-align: top; }
         table th { color: #6f859f; font-size: 0.73rem; text-transform: uppercase; letter-spacing: 0.06em; }
         table tbody tr:hover { background: #f8fbff; }
+        table th a {
+            color: inherit;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.28rem;
+        }
+        table th a:hover {
+            text-decoration: none;
+        }
+        .sort-caret {
+            display: inline-flex;
+            flex-direction: column;
+            line-height: 0.72;
+            font-size: 0.72rem;
+            letter-spacing: 0;
+        }
+        .sort-caret span {
+            color: #9aa9bb;
+            font-weight: 700;
+        }
+        .sort-caret span.active {
+            color: #2f4a69;
+        }
 
         .item-actions {
             display: flex;
@@ -390,10 +415,13 @@
         <div class="form-card-head">
             <h3>{{ editing ? 'Edit Item #' ~ itemForm.id : 'Add New Item' }}</h3>
             {% if editing %}
-                <a href="/admin/items?page={{ itemPage }}" class="close-edit-btn" aria-label="Close edit form" title="Close edit form">×</a>
+                <a href="/admin/items?page={{ itemPage }}&sort={{ itemSort }}&dir={{ itemDir }}" class="close-edit-btn" aria-label="Close edit form" title="Close edit form">×</a>
             {% endif %}
         </div>
         <form action="/admin/items/save" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="page" value="{{ itemPage }}">
+            <input type="hidden" name="sort" value="{{ itemSort }}">
+            <input type="hidden" name="dir" value="{{ itemDir }}">
             {% if editing %}
                 <input type="hidden" name="id" value="{{ itemForm.id }}">
             {% endif %}
@@ -404,7 +432,7 @@
                 </label>
                 <label>
                     Price
-                    <input type="number" step="0.01" min="0" name="price" value="{{ itemForm.price }}">
+                    <input type="number" step="any" min="0" name="price" value="{{ itemForm.price }}">
                 </label>
                 <label>
                     Release Year
@@ -476,10 +504,29 @@
     <section class="section-card">
     <h3>Existing Items</h3>
     {% if items %}
+        {% set idNextDir = itemSort == 'id' and itemDir == 'asc' ? 'desc' : 'asc' %}
+        {% set createdNextDir = itemSort == 'created_at' and itemDir == 'asc' ? 'desc' : 'asc' %}
         <table>
             <thead>
             <tr>
-                <th>ID</th>
+                <th>
+                    <a href="/admin/items?page=1&sort=id&dir={{ idNextDir }}">
+                        ID
+                        <span class="sort-caret" aria-hidden="true">
+                            <span class="{{ itemSort == 'id' and itemDir == 'asc' ? 'active' : '' }}">▲</span>
+                            <span class="{{ itemSort == 'id' and itemDir == 'desc' ? 'active' : '' }}">▼</span>
+                        </span>
+                    </a>
+                </th>
+                <th>
+                    <a href="/admin/items?page=1&sort=created_at&dir={{ createdNextDir }}">
+                        Created
+                        <span class="sort-caret" aria-hidden="true">
+                            <span class="{{ itemSort == 'created_at' and itemDir == 'asc' ? 'active' : '' }}">▲</span>
+                            <span class="{{ itemSort == 'created_at' and itemDir == 'desc' ? 'active' : '' }}">▼</span>
+                        </span>
+                    </a>
+                </th>
                 <th>Title</th>
                 <th>Price</th>
                 <th>Year</th>
@@ -492,6 +539,7 @@
             {% for item in items %}
                 <tr>
                     <td>{{ item.id }}</td>
+                    <td>{{ item.created_at|date('Y-m-d H:i') }}</td>
                     <td>{{ item.title }}</td>
                     <td>{{ '$' ~ item.price|number_format(2, '.', ',') }}</td>
                     <td>{{ item.release_year }}</td>
@@ -499,9 +547,12 @@
                     <td>{{ item.tags_text }}</td>
                     <td>
                         <div class="item-actions">
-                        <a href="/admin/items?edit_id={{ item.id }}&page={{ itemPagination.page }}" role="button" class="secondary compact-action">Edit</a>
+                        <a href="/admin/items?edit_id={{ item.id }}&page={{ itemPagination.page }}&sort={{ itemSort }}&dir={{ itemDir }}" role="button" class="secondary compact-action">Edit</a>
                         <form action="/admin/items/delete" method="post" class="js-delete-form" data-item-title="{{ item.title|e('html_attr') }}">
                             <input type="hidden" name="id" value="{{ item.id }}">
+                            <input type="hidden" name="page" value="{{ itemPagination.page }}">
+                            <input type="hidden" name="sort" value="{{ itemSort }}">
+                            <input type="hidden" name="dir" value="{{ itemDir }}">
                             <button type="button" class="compact-action js-delete-trigger">Delete</button>
                         </form>
                         </div>
@@ -513,11 +564,11 @@
         {% if itemPagination.pages > 1 %}
             <nav class="pager">
                 {% if itemPagination.has_prev %}
-                    <a href="?page={{ itemPagination.page - 1 }}">Previous</a>
+                    <a href="?page={{ itemPagination.page - 1 }}&sort={{ itemSort }}&dir={{ itemDir }}">Previous</a>
                 {% endif %}
                 <span>Items page {{ itemPagination.page }} / {{ itemPagination.pages }}</span>
                 {% if itemPagination.has_next %}
-                    <a href="?page={{ itemPagination.page + 1 }}">Next</a>
+                    <a href="?page={{ itemPagination.page + 1 }}&sort={{ itemSort }}&dir={{ itemDir }}">Next</a>
                 {% endif %}
             </nav>
         {% endif %}
