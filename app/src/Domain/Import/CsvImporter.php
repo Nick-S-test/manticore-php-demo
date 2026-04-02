@@ -225,7 +225,7 @@ class CsvImporter
             $batch[] = $document;
             if (count($batch) >= $batchSize) {
                 if ($appendAsNewIds) {
-                    $table->addDocuments($batch);
+                $table->addDocuments($batch);
                 } else {
                     $table->replaceDocuments($batch);
                 }
@@ -239,7 +239,7 @@ class CsvImporter
 
         if (!empty($batch)) {
             if ($appendAsNewIds) {
-                $table->addDocuments($batch);
+            $table->addDocuments($batch);
             } else {
                 $table->replaceDocuments($batch);
             }

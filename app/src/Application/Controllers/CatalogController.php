@@ -361,7 +361,8 @@ class CatalogController
         if ($query !== '') {
             if ($fuzzy) {
                 $search->search($query);
-                $search->option('fuzzy', 1);
+                $search->option('fuzzy', 1)
+                	->option('force_bigrams', 1);
             } else {
                 $search->search($query);
             }
@@ -484,7 +485,10 @@ class CatalogController
             'body' => [
                 'query' => $term,
                 'table' => $this->tableName,
-                'options' => ['limit' => $limit],
+                'options' => [
+                	'limit' => $limit,
+                	'force_bigrams' => 1,
+                ],
             ],
         ];
 

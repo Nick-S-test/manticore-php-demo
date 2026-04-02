@@ -3,6 +3,5 @@
 
 app/vendor/
 app/storage/logs/*.log
-app/public/images/fixtures/*
 app/public/images/uploads/*
 fixtures/output/*

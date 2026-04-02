@@ -770,7 +770,7 @@ function generateCatalogImages(
 			$path = sprintf('%s/game_%04d.png', $imagesDir, $nextImageSequence);
 			$nextImageSequence++;
 		} else {
-			$path = sprintf('%s/game_%04d.png', $imagesDir, $id);
+		$path = sprintf('%s/game_%04d.png', $imagesDir, $id);
 		}
 		$prompt = (string)($record['image_prompt'] ?? '');
 		$jobIndex = count($jobs);

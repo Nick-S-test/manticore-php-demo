@@ -1,101 +1,59 @@
-## Implementing Modern Search in PHP Using Manticore: Practical Guide
+## How to Build Practical Search in PHP with Manticore
 
-Search is one of the highest-leverage capabilities in data-heavy apps. This guide shows how this project uses **Manticore Search** and the **Manticore PHP client** to implement production-style search patterns: full-text, fuzzy, facets, filters, autocomplete, hybrid retrieval, KNN similarity, and scroll pagination.
+If your goal is "users can find the right item quickly," this guide gives you a practical implementation path in PHP with Manticore.
 
-By the time you finish this guide, you will have:
+Using a simple demo PHP app for board-game discovery, this guide walks through the user experience from the first query to refining and sorting results, paging through them, and discovering similar items.
 
-- an RT table that is fully searchable and taxonomy-aware
-- a clean PHP integration layer built on Manticore PHP client
-- search-as-you-type behavior, autocomplete, and facet-driven navigation
-- semantic retrieval patterns with hybrid search and KNN
-- reliable scroll-based pagination for deep result browsing
+You can reuse the same sequence in other PHP apps as a practical rollout plan: start with solid keyword search, then add semantic layers as your project needs them.
 
 ---
 
-## Contents
+## See It First
 
-- Requirements
-- Environment setup
-- Try the hosted demo
-- Initialize the Manticore PHP client
-- Model your data for search
-- Load initial data
-- Manage catalog data with CRUD
-- Build the core search loop
-- Add semantic retrieval (hybrid + KNN)
-- Paginate safely with scroll tokens
-- Implementation notes
+Before setup, you can try the hosted demo to see the end result:
+
+- https://demo-catalog.manticoresearch.com
+
+
+
+![Catalog search results with filters and facets](./demo.png)
 
 ---
 
-## Requirements
+## Local Setup
 
-- PHP 8.1+
-- Composer
-- Running Manticore with HTTP API
-- `manticoresearch-php` client (installed via Composer in this app)
-- Slim Framework (used for routing/controllers around the search layer)
-
-
----
-
-## Environment Setup
-
-We start by bringing up Manticore and installing the PHP dependencies. 
-
-### Launching Manticore in Docker
-
-Recommended local setup in this repo uses Docker Compose, so we can start the search node with one command and keep the setup reproducible across environments.
-
-If Docker is not part of your stack, Manticore also supports native installation on Debian/Ubuntu, RHEL/CentOS, macOS, and Windows, as well as builds from source. You can follow the official installation guide for those paths:
-
-- https://manual.manticoresearch.com/Installation
-
-To start Manticore with Docker Compose in the repository, run:
+To run the same flow locally, you only need PHP 8.1+, Composer, and Docker (or any other way to run Manticore). Start by launching Manticore from the repo root:
 
 ```bash
 cd <repo-root>
 docker compose up -d
 ```
 
-Then install the PHP app dependencies:
+At this point, `docker compose ps` should show the container as running.
+
+Next, move to the app and install dependencies. The application layer in this demo uses the Slim framework for routing and controllers.
 
 ```bash
-cd app
+cd <repo-root>/app
 composer install
 ```
 
-To configure how the PHP app connects to Manticore and which host/port it serves on, create an `.env` from the provided template:
+Then create your local environment file:
 
 ```bash
 cp <repo-root>/app/.env.example <repo-root>/app/.env
 ```
 
-Finally, start the app locally:
+For local runs, this file mainly tells the app how to reach Manticore:
 
-```bash
-cd <repo-root>/app
-php bin/bootstrap-demo.php
-php -S localhost:8081 -t public
+```env
+MANTICORE_HOST=127.0.0.1
+MANTICORE_PORT=9308
 ```
 
-Then just open `http://localhost:8081/` and the demo is here:
+If you use the provided Docker setup, these defaults are usually enough.
 
-![demo](demo.png)
-
-
-### Try the Hosted Demo
-
-If you want to see the project behavior immediately, you can try a hosted demo instance:
-
-- https://demo-catalog.manticoresearch.com
-
-
-## Initialize the Manticore PHP Client
-
-In our app, we initialize the Manticore client once at startup and pass it to services/controllers that execute search and indexing operations.
-
-Here’s a snippet from the app which does this:
+After this step, the app has what it needs to connect to Manticore using host/port settings from `config/settings.php`.
 
 ```php
 $settings = require $root . '/config/settings.php';
@@ -103,307 +61,153 @@ $settings = require $root . '/config/settings.php';
 $client = new Client([
     'host' => $settings['manticore']['host'],
     'port' => $settings['manticore']['port'],
-    'transport' => $settings['manticore']['transport'],
+    'transport' => 'Http',
 ]);
-
-$indexManager = new IndexManager($client, $settings['table']);
-$importer = new CsvImporter($client, $indexManager, $logger, $settings);
-$catalogController = new CatalogController($twig, $client, $settings);
 ```
 
-This keeps connection setup centralized and makes host/port changes straightforward via config.
-
----
-
-## Model Your Data for Search
-
-In our demo, we model a board-game catalog. Each document represents one game with a searchable title/description, structured metadata for filtering (price, release year, player counts, play time), taxonomy fields (category/tags), and a vectorized description for semantic retrieval.
-
-The project stores Manticore schema in `app/config/settings.php`.
-
-Here you can see the schema excerpt:
-
-```php
-  'table' => [
-        'name' => 'catalog_board_games',
-        'columns' => [
-            'title' => ['type' => 'string'],
-            'description' => ['type' => 'text', 'options' => ['indexed', 'stored']],
-            'category_id' => ['type' => 'integer'],
-            'tag_id' => ['type' => 'multi64'],
-            'price' => ['type' => 'float'],
-            'player_count_min' => ['type' => 'integer'],
-            'player_count_max' => ['type' => 'integer'],
-            'play_time_minutes' => ['type' => 'integer'],
-            'publisher' => ['type' => 'string'],
-            'designer' => ['type' => 'string'],
-            'release_year' => ['type' => 'integer'],
-            'image_url' => ['type' => 'string'],
-            'created_at' => ['type' => 'timestamp'],
-            'updated_at' => ['type' => 'timestamp'],
-            'description_vector' => [
-                'type' => 'float_vector',
-                'options' => [
-                    'KNN_TYPE' => 'hnsw',
-                    'HNSW_SIMILARITY' => 'l2',
-                    'MODEL_NAME' => 'sentence-transformers/all-MiniLM-L6-v2',
-                    'FROM' => 'description',
-                ],
-            ],
-        ],
-        'settings' => [
-            'morphology' => 'stem_en',
-            'min_word_len' => 2,
-            'dict' => 'keywords',
-            'min_infix_len' => 2,
-        ],
-        'taxonomy_tables' => [
-            [
-                'name' => 'catalog_categories',
-                'columns' => [
-                    'label' => ['type' => 'string'],
-                ],
-                'settings' => [],
-            ],
-            [
-                'name' => 'catalog_tags',
-                'columns' => [
-                    'label' => ['type' => 'string'],
-                ],
-                'settings' => [],
-            ],
-        ],
-    ],
-```
-
-Main RT table:
-
-- `catalog_board_games`
-- text fields: `title`, `description`
-- numeric attributes for filtering/sorting: `price`, `release_year`, player counts, play time
-- taxonomy attributes: `category_id`, `tag_id` (`multi64`)
-- vector field: `description_vector` with auto-embedding from `description`
-
-Taxonomy tables:
-
-- `catalog_categories`
-- `catalog_tags`
-
-Table structures are managed through the app's Manticore configuration and bootstrap/import flow.
-
----
-
-## Load Initial Data
-
-The demo uses a prepared dataset that is already included in the project and imported into the `catalog_board_games` Manticore table.
-
-To load records from fixtures, run:
+Before you can test search behavior, the app needs sample catalog records in Manticore. The bootstrap command creates/recreates the demo table and imports the bundled starter data so you begin from a known state:
 
 ```bash
 cd <repo-root>/app
 php bin/bootstrap-demo.php
 ```
 
-In this demo, we use two import modes so you can conveniently experiment with the data::
+You should see import progress move in batches until completion, which means the catalog is ready for querying.
 
-- "Reset" import: idempotent import for deterministic reloads, performed automatically when the app starts.
-- "Add-on" import: import new rows through the app' admin UI without replacing existing records.
+Finally, start the app server:
+
+```bash
+cd <repo-root>/app
+php -S localhost:8081 -t public
+```
+
+When you open `http://localhost:8081/`, you should land on a working catalog page where you can immediately search, filter, and open item details.
 
 ---
 
-## Manage Catalog Data with CRUD
+## One Search Journey, End to End
 
-Beyond search, admin page handlers demonstrate direct document lifecycle operations through `Manticoresearch\Table`.
+From here, we build the search flow the same way users experience it: type a query for the game they want to find, narrow options to what fits their constraints (for example budget or play time), page deeper through matches, open a game’s detail page and explore similar games.
 
-### Create
+### Step 1: Help users start a query
 
-```php
-$table = $client->table('catalog_board_games');
-$table->addDocument([
-    'title' => 'New Game',
-    'description' => 'Fast cooperative strategy game.',
-    'category_id' => 4,
-    'tag_id' => [3, 9, 11],
-    'price' => 29.99,
-    'release_year' => 2026,
-    'created_at' => time(),
-    'updated_at' => time(),
-]);
-```
+Users often start with incomplete terms, so autocomplete helps them shape the query before they submit. In practice, this reduces failed searches caused by wording uncertainty and shortens time to first useful result.
 
-### Read
-
-Single document:
-
-```php
-$hit = $table->getDocumentById($id);
-```
-
-List with paging/sorting:
-
-```php
-$search = new Search($client);
-$search->setTable('catalog_board_games')
-    ->search('*')
-    ->sort('created_at', 'desc')
-    ->limit($perPage)
-    ->offset(($page - 1) * $perPage);
-$resultSet = $search->get();
-```
-
-### Update
-
-```php
-$table->replaceDocument([
-    'title' => $title,
-    'description' => $description,
-    'category_id' => $categoryId,
-    'tag_id' => $tagIds,
-    'price' => $price,
-    'updated_at' => time(),
-], $id);
-```
-
-### Delete
-
-```php
-$table->deleteDocument($id);
-```
-
-We already use batch operations in the importer: `addDocuments()` for append mode and `replaceDocuments()` for idempotent reloads. The Manticore PHP client also provides `deleteDocuments()` for query-based bulk deletes.
-
-```php
-if (count($batch) >= $batchSize) {
-    if ($appendAsNewIds) {
-        $table->addDocuments($batch);
-    } else {
-        $table->replaceDocuments($batch);
-    }
-    $processed += count($batch);
-    $batch = [];
-}
-```
-
-![admin_crud](admin_crud.gif)
----
-
-## Build the Core Search Loop
-
-In the app, Slim controllers receive request params and delegate search execution to `Manticoresearch\Search` / `Manticoresearch\Table`.
-
-### Basic full-text query
-
-Full-text search is the baseline retrieval layer for keyword-driven discovery. It ranks documents by textual relevance and supports natural query terms across indexed text fields. In practice, this gives us fast, interpretable search behavior for common user intent.
-
-```php
-$search = new Search($client);
-$search->setTable('catalog_board_games')
-    ->search($query !== '' ? $query : '*')
-    ->limit($limit);
-$result = $search->get();
-```
-
-### Fuzzy mode
-
-Fuzzy search allows approximate matching, so near-miss terms can still retrieve relevant results. This is useful when users make typos, use slightly different wording, or enter incomplete terms. In practice, it improves recall and makes search feel more forgiving without requiring perfect spelling.
-
-Fuzzy mode can easily be enabled through Manticore options:
-
-```php
-$search->search($fuzzyQueryString);
-$search->option('fuzzy', 1);
-```
-
-![fuzzy](fuzzy_search.gif)
-
-### Filters
-
-Filters are how we narrow result sets to business-relevant numeric constraints without changing the query text itself. In this catalog context, we use filters for range-style constraints (for example, price bounds), while categories/tags are handled through facets.
-
-```php
-$search->filter('price', 'gte', [$priceMin]);
-$search->filter('price', 'lte', [$priceMax]);
-$search->filter('release_year', 'gte', [$releaseYearMin]);
-$search->filter('release_year', 'lte', [$releaseYearMax]);
-$search->filter('play_time_minutes', 'gte', [$playTimeMin]);
-$search->filter('play_time_minutes', 'lte', [$playTimeMax]);
-$search->filter('player_count_min', 'gte', [$playerCountMin]);
-$search->filter('player_count_max', 'lte', [$playerCountMax]);
-```
-
-![filters](filters.gif)
-
-### Facets
-
-Facets provide grouped counts for key attributes so users can understand result composition and refine quickly. In this app, categories and tags are modeled as faceted navigation dimensions. In Manticore, facet calculation is optimized to reuse the main search work, so returning facet buckets usually adds incremental overhead rather than re-running the full query pipeline.
-
-```php
-$search->facet('category_id')
-    ->facet('tag_id');
-
-$resultSet = $search->get();
-$facets = $resultSet->getFacets();
-$categoryBuckets = $facets['category_id']['buckets'] ?? [];
-$tagBuckets = $facets['tag_id']['buckets'] ?? [];
-```
-
-![facets](facets.gif)
-
-### Autocomplete
-
-Autocomplete improves query formulation before users even submit a search. It reduces typing effort, helps recover from uncertain wording, and can increase successful searches by steering users toward likely matches.
+In the UI, this is exposed as live search (search-as-you-type suggestions under the input), so users can pivot before committing to a full results request.
 
 ```php
 $payload = [
     'body' => [
-        'table' => 'catalog_board_games',
         'query' => $term,
-        'options' => ['limit' => $limit],
+        'table' => $this->tableName,
+        'options' => ['limit' => $limit, 'force_bigrams' => 1],
     ],
 ];
-$response = $client->autocomplete($payload);
+$suggestions = $this->client->autocomplete($payload);
 ```
 
----
+![Live search suggestions while typing in the query field](./live_search.gif)
 
-## Add Semantic Retrieval (Hybrid + KNN)
+### Step 2: Return useful first-page results
 
-This project uses Manticore vector capabilities in two ways:
-
-### Hybrid retrieval (text + vector fusion)
-
-Hybrid retrieval combines lexical relevance and semantic similarity in a single Manticore request. The request includes:
-
-- regular text query
-- `knn` on `description_vector` with query text
-- `options.fusion_method = rrf`
-
-Conceptually, this gives you the best of both worlds: exact term matching when users are specific, and semantically related discovery when wording varies.
-
-Request build snippet from the app:
+On the first results page, users expect obvious keyword matches, even when they make small typos. Full-text search should be your baseline, and fuzzy mode can improve recall when spelling is imperfect. The tradeoff is that fuzzy matching can broaden results too much for some queries, so it is usually best as an optional or scoped behavior. 
 
 ```php
-$body = $search->compile();
-if ($useHybrid) {
-    unset($body['aggs']);
-    $body['query'] = [
-        'query_string' => $query,
-    ];
-    $body['knn'] = [
-        'field' => 'description_vector',
-        'query' => $query,
-    ];
-    $body['options']['fusion_method'] = 'rrf';
+$search = (new Search($this->client))
+    ->setTable($this->tableName)
+    ->limit($limit);
+
+if ($query !== '') {
+    $search->search($query);
+    if ($fuzzy) {
+        $search->option('fuzzy', 1)->option('force_bigrams', 1);
+    }
+} else {
+    $search->search('*');
 }
 ```
 
-![hybrid](hybrid_search.gif)
+![Fuzzy search handling close matches for misspelled queries](./fuzzy_search.gif)
 
-### Similar items (KNN)
+For details on applying fuzzy search in Manticore, see [Spell correction and fuzzy search](https://manual.manticoresearch.com/Searching/Spell_correction#Fuzzy-Search).
 
-For item-to-item similarity, we run KNN against `description_vector` to return nearest neighbors, excluding current item.
+### Step 3: Narrow quickly without rewriting the query
 
-App snippet:
+When result sets are still broad, filters and facets let users narrow without rewriting the query. Range filters (price, player count, play time, year) handle numeric constraints, while facet counts (categories/tags) show how the current result set is distributed and support one-click refinement.
+
+```php
+$attributeFilters = [
+    'price_min' => 20,
+    'price_max' => 80,
+    'release_year_min' => 2018,
+    'player_count_min' => 2,
+    'player_count_max' => 4,
+];
+
+if ($categoryIds !== []) {
+    $search->filter('category_id', 'in', $categoryIds);
+}
+if ($tagIds !== []) {
+    $search->filter('tag_id', 'in', $tagIds);
+}
+$this->applyNumericFilters($search, $attributeFilters);
+$search->facet('category_id')->facet('tag_id');
+```
+
+![Filters and facets narrowing the result set without rewriting the query](./filters.gif)
+
+### Step 4: Keep exploration stable as users page deeper
+
+Offset pagination can drift when data changes between requests, so this demo uses scroll tokens for "Show more games." In Manticore, the scroll option is designed for deep pagination: instead of paying the cost of larger and larger offsets, each request continues from a returned token. In practice, this gives you more stable continuation, avoids typical deep-offset pitfalls (skips/duplicates), and keeps "load more" behavior predictable as users browse further. See [Manticore Manual: Pagination](https://manual.manticoresearch.com/Searching/Pagination) for details.
+
+```php
+// Page 1 starts a fresh scroll session; next pages continue with returned token.
+$effectiveScrollToken = $page > 1 ? $scrollToken : null;
+$search->option('scroll', $effectiveScrollToken ?? true);
+
+$resultSet = new ResultSet($this->client->search(['body' => $body], true));
+$nextScroll = $resultSet->getScroll();
+$hasMore = $nextScroll !== null && (string) $nextScroll !== '';
+```
+
+![Stable "Show more games" continuation using scroll state](./scroll.gif)
+
+### Step 5: Add semantic help when keywords are not enough
+
+Lexical matching does not always capture intent when wording differs, so this is where semantic search helps. In Manticore, hybrid retrieval is done by sending both a lexical `query` block and a semantic `knn` block (knn = k-nearest neighbors, a vector search method used here to find items with similar meaning) in one search request, then fusing their rankings with `options.fusion_method = rrf`. This improves discovery when user wording is close in meaning but not exact in terms.
+
+In our app, that means a query can return both direct keyword hits and semantically related games in one ranked list. 
+
+#### How Auto-Embeddings Help
+
+This demo relies on Manticore auto-embeddings for the vector field, so you do not have to generate vectors in your application by yourself (see [Manticore Manual: Auto Embeddings](https://manual.manticoresearch.com/Searching/KNN#Auto-Embeddings-(Recommended))).
+
+```php
+'description_vector' => [
+    'type' => 'float_vector',
+    'options' => [
+        'MODEL_NAME' => 'sentence-transformers/all-MiniLM-L6-v2',
+        'FROM' => 'description',
+    ],
+],
+```
+
+With that setup, `knn.query = $query` lets Manticore embed the query text automatically for knn search. 
+
+
+```php
+$body = [
+    'query' => ['bool' => ['must' => [['query_string' => ['query' => $query]]]]],
+    'knn' => [
+        'field' => 'description_vector',
+        'query' => $query,
+    ],
+    'options' => ['fusion_method' => 'rrf'],
+    'limit' => $limit,
+];
+```
+
+On item pages, semantic retrieval solves a different user need: "I like this game, show me close alternatives." It helps users continue discovery without formulating another query, especially when similar games share mechanics or theme but not obvious title keywords. This part uses pure KNN (without lexical query fusion):
 
 ```php
 $search = new Search($this->client);
@@ -417,43 +221,63 @@ $hits = $this->formatResultSet($resultSet)['hits'];
 return array_slice($hits, 0, self::SIMILAR_RESULT_LIMIT);
 ```
 
-![live](live_search.gif)
+
+![Item page with similar games recommendations](./hybrid_search.gif)
 
 ---
 
-## Paginate Safely with Scroll Tokens
+## Keeping Table Data in Sync with App Writes
 
-Deep pagination uses Manticore scroll tokens instead of offset pagination for “show more” style flows.
+In this demo, table data stays in sync through the same app workflow users interact with: baseline bootstrap for a known start, user-triggered batched prepared imports from the admin UI for extra records, and table writes on admin edit/delete actions. Under that workflow, the Manticore PHP client handles imports and admin edits without a separate background layer.
 
-Why scroll can be helpful:
-
-- We avoid offset-based drift when result ordering changes between requests.
-- We keep continuation state in a server-issued token that preserves sorting context.
-- We can keep follow-up requests simpler: after the first request, the scroll token is the key continuation input.
-
-App snippet:
+For prepared imports, the app uses the client's batch write functions: `addDocuments()` for append mode and `replaceDocuments()` for deterministic reload/update mode.
 
 ```php
-$effectiveScrollToken = $page > 1 ? $scrollToken : null;
-$search->option('scroll', $effectiveScrollToken ?? true);
-$resultSet = new ResultSet($this->client->search(['body' => $search->compile()], true));
-$nextScroll = $resultSet->getScroll();
-$results['next_scroll'] = is_string($nextScroll) && $nextScroll !== '' ? $nextScroll : null;
+$table = $this->client->table($this->indexConfig['name']);
+
+if ($appendAsNewIds) {
+    $table->addDocuments($batch);
+} else {
+    $table->replaceDocuments($batch);
+}
 ```
 
-![scroll](scroll.gif)
+The controller keeps progress/offset state for the UI, while write operations are executed through these client calls.
+
+For admin writes, the Manticore PHP client's table API is used to perform update/delete operations on individual documents (game items):
+
+```php
+if ($id > 0) {
+    $this->table->replaceDocument($document, $id);
+} else {
+    $this->table->addDocument($document);
+}
+
+$this->table->deleteDocument($id);
+```
+
+![Admin item management updating indexed records in place](./admin_crud.gif)
+
+If users want to start over while testing, the admin UI provides a reset action that clears imported records and returns the demo to its baseline dataset.
+
+```php
+$baseMaxId = $this->resolveBaseMaxId();
+
+$this->table->deleteDocuments([
+    'range' => [
+        'id' => ['gt' => $baseMaxId],
+    ],
+]);
+
+$this->clearManageItemsEnabled();
+```
+
+This keeps search behavior trustworthy after writes while staying operationally simple in a PHP app.
+
+
 
 ---
 
-## Wrap-Up
+## Conclusion
 
-This project shows what you can implement with a focused Manticore + PHP client integration without introducing unnecessary complexity. You get a search stack that is both expressive and operationally straightforward:
-
-- RT + taxonomy table management
-- full-text + fuzzy + facets + filters
-- autocomplete
-- hybrid text/vector retrieval
-- KNN similar-item retrieval
-- scroll pagination
-
-If you are building a PHP catalog, marketplace, or content discovery product, you can use this as a reference architecture: start with strong full-text fundamentals, layer in vector retrieval where it improves result quality, and keep pagination/query semantics explicit and deterministic. That combination tends to scale well both for users and for the team maintaining the system.
+Overall, this demo shows how to build a practical search experience in a PHP application with Manticore and its PHP client, from the first query to deeper discovery in one coherent flow. The result is a search stack that supports modern relevance needs while remaining clear to implement and maintain. It is also efficient in day-to-day use: one engine and one PHP integration handle key search needs, including lexical search, semantic retrieval, and facets/filters, without splitting search logic across multiple services.
